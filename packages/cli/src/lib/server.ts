@@ -240,16 +240,6 @@ export async function startDevServer(opts: DevServerOpts): Promise<void> {
     }
 
     if (req.method === 'POST' && urlPath === '/api/call') {
-      // Restrict /api/call to loopback — prevents LAN peers from executing
-      // bundle code that makes unrestricted outbound network requests (SSRF).
-      const remoteAddr = req.socket.remoteAddress ?? ''
-      const isLoopback = remoteAddr === '127.0.0.1' || remoteAddr === '::1' || remoteAddr === '::ffff:127.0.0.1'
-      if (!isLoopback) {
-        res.writeHead(403, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ ok: false, error: 'API only accessible from localhost' }))
-        return
-      }
-
       ;(async () => {
         const MAX_BODY = 1_000_000 // 1 MB
         let body = ''
