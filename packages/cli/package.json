@@ -1,0 +1,59 @@
+{
+  "name": "@glyphmoe/cli",
+  "version": "1.0.0",
+  "description": "CLI for building and testing Glyph extensions",
+  "author": "thinkaz",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Glyph-moe/glyph-cli.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/Glyph-moe/glyph-cli#readme",
+  "bugs": "https://github.com/Glyph-moe/glyph-cli/issues",
+  "keywords": ["glyph", "cli", "extension", "novel", "reader"],
+  "engines": { "node": ">=20" },
+  "type": "module",
+  "bin": {
+    "glyph": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "src/runtime"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "prepack": "npm run build",
+    "build": "tsup",
+    "dev": "tsup --watch"
+  },
+  "dependencies": {
+    "commander": "^13.0.0",
+    "esbuild": "^0.25.0",
+    "node-stdlib-browser": "^1.3.1",
+    "picocolors": "^1.1.0",
+    "prompts": "^2.4.2"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0",
+    "vitest": ">=1.0.0",
+    "@glyphmoe/sdk": "*"
+  },
+  "peerDependenciesMeta": {
+    "typescript": {
+      "optional": true
+    },
+    "vitest": {
+      "optional": true
+    },
+    "@glyphmoe/sdk": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/prompts": "^2.4.9"
+  }
+}

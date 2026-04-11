@@ -1,0 +1,39 @@
+{
+  "name": "create-glyph-extension",
+  "version": "1.0.0",
+  "description": "Create a new Glyph extension project",
+  "author": "thinkaz",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Glyph-moe/glyph-cli.git",
+    "directory": "packages/create-glyph-extension"
+  },
+  "homepage": "https://github.com/Glyph-moe/glyph-cli#readme",
+  "bugs": "https://github.com/Glyph-moe/glyph-cli/issues",
+  "keywords": ["glyph", "create", "extension", "scaffolding", "novel", "reader"],
+  "engines": { "node": ">=20" },
+  "type": "module",
+  "bin": {
+    "create-glyph-extension": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "prepack": "npm run build",
+    "build": "tsup"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "prompts": "^2.4.2",
+    "picocolors": "^1.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/prompts": "^2.4.9",
+    "tsup": "^8.5.1"
+  }
+}

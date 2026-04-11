@@ -1,0 +1,17 @@
+{
+  "name": "glyph-cli-monorepo",
+  "private": true,
+  "license": "MIT",
+  "engines": { "node": ">=20" },
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3"
+  }
+}
