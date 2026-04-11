@@ -1,6 +1,6 @@
 {
   "name": "@glyphmoe/cli",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "CLI for building and testing Glyph extensions",
   "author": "thinkaz",
   "license": "MIT",
@@ -11,8 +11,16 @@
   },
   "homepage": "https://github.com/Glyph-moe/glyph-cli#readme",
   "bugs": "https://github.com/Glyph-moe/glyph-cli/issues",
-  "keywords": ["glyph", "cli", "extension", "novel", "reader"],
-  "engines": { "node": ">=20" },
+  "keywords": [
+    "glyph",
+    "cli",
+    "extension",
+    "novel",
+    "reader"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "type": "module",
   "bin": {
     "glyph": "./dist/index.js"
