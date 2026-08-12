@@ -1,11 +1,12 @@
 import type { Command } from 'commander'
 import { spawnSync } from 'child_process'
-import { existsSync } from 'fs'
+import { existsSync, writeFileSync, mkdirSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { join } from 'path'
-import { findProjectRoot } from '../lib/project.js'
+import { findProjectRoot, discoverSources } from '../lib/project.js'
 import { ensureNodeModules } from '../utils/errors.js'
 import { writeVitestConfig } from '../lib/vitest-config.js'
+import * as log from '../utils/log.js'
 
 const NPX_CMD = process.platform === 'win32' ? 'npx.cmd' : 'npx'
 
@@ -13,9 +14,39 @@ export function registerTestCommand(program: Command) {
   program
     .command('test')
     .description('Run tests with vitest')
+    .option('--generate', 'Generate test files for sources that don\'t have them')
     .allowUnknownOption()
     .helpOption(false)
     .action((_opts, cmd) => {
+      // --generate: scaffold test files then exit
+      if (cmd.opts().generate) {
+        const root = findProjectRoot()
+        const sources = discoverSources(root)
+        let created = 0
+        for (const source of sources.filter(s => s.language === 'js')) {
+          const testPath = join(root, 'sources', source.id, 'src', `${source.id}.test.ts`)
+          if (existsSync(testPath)) {
+            log.info(`${source.id} — test file already exists`)
+            continue
+          }
+          mkdirSync(join(root, 'sources', source.id, 'src'), { recursive: true })
+          writeFileSync(testPath, `import { describe, it, expect, beforeEach } from 'vitest'
+import { clearMocks } from '@glyphmoe/sdk/testing'
+
+describe('${source.id}', () => {
+  beforeEach(() => clearMocks())
+
+  it('should parse search results', () => {
+    // TODO: add mock HTML and test parser
+  })
+})
+`)
+          log.success(`Created sources/${source.id}/src/${source.id}.test.ts`)
+          created++
+        }
+        console.log(`\n${created} test file(s) generated.`)
+        return
+      }
       const root = findProjectRoot()
       ensureNodeModules(root)
 

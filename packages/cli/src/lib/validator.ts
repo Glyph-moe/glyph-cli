@@ -1,11 +1,12 @@
 import { spawnSync } from 'child_process'
 import { existsSync, readFileSync, writeFileSync, readdirSync } from 'fs'
 import { join } from 'path'
+import { createRequire } from 'module'
 import { GlyphError } from '../utils/errors.js'
 import type { ValidationError, ValidationResult } from './builder.js'
-import { PLAYGROUND_RUNTIME } from './runtime-shim.js'
 import { writeVitestConfig } from './vitest-config.js'
 
+const _require = createRequire(import.meta.url)
 const NPX_CMD = process.platform === 'win32' ? 'npx.cmd' : 'npx'
 
 /** Run `tsc --noEmit` on the project. Returns { passed, output }. */
@@ -185,9 +186,9 @@ export async function smokeTest(
     // Runs the developer's own compiled bundle in the current Node process.
     // This has full access to Node APIs — acceptable for a local dev tool.
     // eslint-disable-next-line no-new-func
-    const fn = new Function(PLAYGROUND_RUNTIME + bundleCode + '; return GlyphExtension;')
-    const ext = fn() as Record<string, unknown>
-    const source = (ext.default ?? ext) as Record<string, unknown>
+    const fn = new Function('require', bundleCode + '; return GlyphExtension;')
+    const ext = fn(_require) as Record<string, unknown>
+    const source = (ext.source ?? ext.default ?? ext) as Record<string, unknown>
 
     let timeoutId: ReturnType<typeof setTimeout>
     const timeout = new Promise<never>((_, reject) => {
@@ -195,17 +196,13 @@ export async function smokeTest(
     })
     timeout.catch(() => {}) // prevent unhandled rejection if timeout fires after success
 
-    if (typeof source.initialise === 'function') {
-      await Promise.race([(source.initialise as () => Promise<void>)(), timeout])
-    }
-
     if (typeof source.searchNovels !== 'function') {
       clearTimeout(timeoutId!)
       return { passed: false, error: 'searchNovels is not a function', duration: Date.now() - start }
     }
 
     const result = await Promise.race([
-      (source.searchNovels as (q: string, p: number) => Promise<Record<string, unknown>>)('test', 1),
+      (source.searchNovels as (q: string, p: number, f: unknown[]) => Promise<Record<string, unknown>>)('test', 1, []),
       timeout,
     ])
     clearTimeout(timeoutId!)

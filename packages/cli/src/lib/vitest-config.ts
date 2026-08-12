@@ -1,5 +1,6 @@
 import { existsSync, writeFileSync, mkdirSync, readFileSync } from 'fs'
-import { join } from 'path'
+import { join, dirname } from 'path'
+import { fileURLToPath } from 'url'
 
 /** Escape a file-system path for safe interpolation into a JS/TS string literal. */
 function escapePath(p: string): string {
@@ -16,6 +17,12 @@ interface WriteVitestConfigOpts {
 
 export function writeVitestConfig(opts: WriteVitestConfigOpts): string {
   const { root, setupFilePath, testRuntimePath, configName, setupName } = opts
+
+  // Resolve shim dir: src/lib/shims/ relative to this file
+  const thisDir = typeof __dirname !== 'undefined'
+    ? __dirname
+    : dirname(fileURLToPath(import.meta.url))
+  const shimDir = join(thisDir, '..', 'src', 'lib', 'shims').split('\\').join('/')
 
   const cacheDir = join(root, 'node_modules', '.cache', 'glyph')
   mkdirSync(cacheDir, { recursive: true })
@@ -46,6 +53,13 @@ import rawUserConfig from '${escapePath(userConfigPath)}'
 
 const userConfig = typeof rawUserConfig === 'function' ? await rawUserConfig({}) : rawUserConfig
 export default mergeConfig(userConfig, defineConfig({
+  resolve: {
+    alias: {
+      'glyph:extension/http@0.1.0': '${escapePath(shimDir)}/http.ts',
+      'glyph:extension/html@0.1.0': '${escapePath(shimDir)}/html.ts',
+      'glyph:extension/host@0.1.0': '${escapePath(shimDir)}/host.ts',
+    },
+  },
   test: {
     setupFiles: ['${escapePath(setupFilePosix)}'],
   },
@@ -56,6 +70,13 @@ export default mergeConfig(userConfig, defineConfig({
 import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      'glyph:extension/http@0.1.0': '${escapePath(shimDir)}/http.ts',
+      'glyph:extension/html@0.1.0': '${escapePath(shimDir)}/html.ts',
+      'glyph:extension/host@0.1.0': '${escapePath(shimDir)}/host.ts',
+    },
+  },
   test: {
     setupFiles: ['${escapePath(setupFilePosix)}'],
     exclude: ['**/node_modules/**'],

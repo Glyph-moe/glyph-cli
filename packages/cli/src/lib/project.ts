@@ -24,6 +24,7 @@ export interface SourceEntry {
   id: string
   dir: string
   entryPoint: string
+  language: 'js' | 'rust'
 }
 
 export function discoverSources(root: string): SourceEntry[] {
@@ -37,18 +38,32 @@ export function discoverSources(root: string): SourceEntry[] {
     if (!entry.isDirectory()) continue
 
     const dir = join(sourcesDir, entry.name)
+
+    // Check for Rust source (Cargo.toml with component metadata)
+    const cargoToml = join(dir, 'Cargo.toml')
+    if (existsSync(cargoToml)) {
+      const content = readFileSync(cargoToml, 'utf-8')
+      if (content.includes('[package.metadata.component]')) {
+        sources.push({
+          id: entry.name,
+          dir,
+          entryPoint: join(dir, 'src', 'lib.rs'),
+          language: 'rust',
+        })
+        continue
+      }
+    }
+
+    // Check for JS/TS source
     const mainTs = join(dir, 'src', 'main.ts')
     const indexTs = join(dir, 'src', 'index.ts')
 
     let entryPoint: string | undefined
-    if (existsSync(mainTs)) {
-      entryPoint = mainTs
-    } else if (existsSync(indexTs)) {
-      entryPoint = indexTs
-    }
+    if (existsSync(mainTs)) entryPoint = mainTs
+    else if (existsSync(indexTs)) entryPoint = indexTs
 
     if (entryPoint) {
-      sources.push({ id: entry.name, dir, entryPoint })
+      sources.push({ id: entry.name, dir, entryPoint, language: 'js' })
     }
   }
 

@@ -2,11 +2,12 @@ import type { Command } from 'commander'
 import { join } from 'path'
 import { existsSync, mkdirSync } from 'fs'
 import { fileURLToPath } from 'url'
+import { Listr } from 'listr2'
 import { findProjectRoot, discoverSources } from '../lib/project.js'
-import { buildSource, validateBundle } from '../lib/builder.js'
+import { buildSourceDev, validateBundle } from '../lib/builder.js'
 import { autoFix, formatCiOutput, validateTypecheck, validateTests, detectConsoleLogs, smokeTest } from '../lib/validator.js'
 import type { CiOutputData } from '../lib/validator.js'
-import { ensureNodeModules, ensureRepoJson, ensureSourcesDir } from '../utils/errors.js'
+import { ensureRepoJson, ensureSourcesDir } from '../utils/errors.js'
 import * as log from '../utils/log.js'
 
 export function registerValidateCommand(program: Command) {
@@ -28,7 +29,6 @@ export function registerValidateCommand(program: Command) {
       }) => {
         const root = findProjectRoot()
         ensureRepoJson(root)
-        ensureNodeModules(root)
         ensureSourcesDir(root)
 
         const sources = discoverSources(root)
@@ -48,26 +48,43 @@ export function registerValidateCommand(program: Command) {
 
         const nodePaths = [join(root, 'node_modules')]
 
-        // Build all sources
+        // Only build JS sources (Rust uses cargo component, handled separately)
+        const jsSources = sources.filter(s => s.language === 'js')
+
+        const buildErrors: { id: string; error: string }[] = []
+
+        // Build + validate via listr2 (unless CI mode)
         if (!opts.ci) {
-          console.log('Building sources...')
-        }
-        for (const source of sources) {
-          const outfile = join(distDir, `${source.id}.js`)
-          await buildSource({
-            entryPoint: source.entryPoint,
-            outfile,
-            minify: true,
-            nodePaths,
-            absWorkingDir: root,
-          })
+          const buildTasks = new Listr(
+            jsSources.map((source) => ({
+              title: `Build & validate ${source.id}`,
+              task: async (_ctx: any, task: any) => {
+                const outfile = join(distDir, `${source.id}.js`)
+                await buildSourceDev({ entryPoint: source.entryPoint, outfile, nodePaths, absWorkingDir: root })
+                const result = validateBundle(source.id, outfile)
+                if (!result.passed) {
+                  const errMsg = result.errors.map(e => `${e.field}: ${e.message}`).join(', ')
+                  buildErrors.push({ id: source.id, error: 'validation failed' })
+                  throw new Error(errMsg)
+                }
+                task.title = `${source.id} — passed`
+              },
+            })),
+            { renderer: 'default', concurrent: false, exitOnError: false },
+          )
+          await buildTasks.run()
+        } else {
+          for (const source of jsSources) {
+            const outfile = join(distDir, `${source.id}.js`)
+            try {
+              await buildSourceDev({ entryPoint: source.entryPoint, outfile, nodePaths, absWorkingDir: root })
+            } catch (err) {
+              buildErrors.push({ id: source.id, error: err instanceof Error ? err.message : String(err) })
+            }
+          }
         }
 
-        // Validate all bundles
-        if (!opts.ci) {
-          console.log('Validating sources...\n')
-        }
-        let results = sources.map((source) => {
+        let results = jsSources.map((source) => {
           const bundlePath = join(distDir, `${source.id}.js`)
           return validateBundle(source.id, bundlePath)
         })
@@ -90,15 +107,9 @@ export function registerValidateCommand(program: Command) {
             if (fixResult.applied.length > 0) {
               anyFileChanged = true
               // Rebuild the fixed source
-              const source = sources.find((s) => s.id === result.sourceId)!
+              const source = jsSources.find((s) => s.id === result.sourceId)!
               const outfile = join(distDir, `${source.id}.js`)
-              await buildSource({
-                entryPoint: source.entryPoint,
-                outfile,
-                minify: true,
-                nodePaths,
-                absWorkingDir: root,
-              })
+              await buildSourceDev({ entryPoint: source.entryPoint, outfile, nodePaths, absWorkingDir: root })
             }
           }
 
@@ -107,7 +118,7 @@ export function registerValidateCommand(program: Command) {
             if (!opts.ci) {
               console.log('\nRe-validating...\n')
             }
-            results = sources.map((source) => {
+            results = jsSources.map((source) => {
               const bundlePath = join(distDir, `${source.id}.js`)
               return validateBundle(source.id, bundlePath)
             })
@@ -157,9 +168,9 @@ export function registerValidateCommand(program: Command) {
           }
         }
 
-        // console.log detection (always runs)
+        // console.log detection (always runs, JS sources only)
         const consoleLogWarnings: { sourceId: string; consoleLogs: number }[] = []
-        for (const source of sources) {
+        for (const source of jsSources) {
           const hits = detectConsoleLogs(source.id, sourcesDir)
           if (hits.length > 0) {
             consoleLogWarnings.push({ sourceId: source.id, consoleLogs: hits.length })
@@ -172,10 +183,10 @@ export function registerValidateCommand(program: Command) {
           }
         }
 
-        // --smoke: call searchNovels("test", 1) with real HTTP
+        // --smoke: call searchNovels("test", 1) with real HTTP (JS sources only)
         if (opts.smoke) {
           if (!opts.ci) console.log('\nRunning smoke tests...')
-          for (const source of sources) {
+          for (const source of jsSources) {
             const result = await smokeTest(source.id, distDir)
             smokeResults.push({ sourceId: source.id, ...result })
             if (result.passed) {

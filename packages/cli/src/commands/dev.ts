@@ -9,6 +9,7 @@ export function registerDevCommand(program: Command) {
     .description('Start development server with hot reload')
     .option('-p, --port <number>', 'Port number', '8888')
     .option('--open', 'Open browser automatically')
+    .option('--url <url>', 'Public base URL (for tunnels like cloudflared/ngrok)')
     .action(async (opts) => {
       const port = parseInt(opts.port, 10)
       if (Number.isNaN(port) || port < 1 || port > 65535) {
@@ -24,6 +25,7 @@ export function registerDevCommand(program: Command) {
         root,
         port,
         open: opts.open || false,
+        publicUrl: opts.url,
       })
     })
 }

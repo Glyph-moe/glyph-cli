@@ -1,13 +1,18 @@
 import http from 'http'
 import { execFile } from 'child_process'
+import { createInterface } from 'readline'
+import { createRequire } from 'module'
 import { existsSync, readFileSync, writeFile, mkdirSync, statSync, realpathSync } from 'fs'
+
+const _require = createRequire(import.meta.url)
 import { join, resolve, extname, sep } from 'path'
 import type { BuildContext } from 'esbuild'
 import pc from 'picocolors'
 import { readRepoConfig, discoverSources, type SourceEntry } from './project.js'
-import { createWatchContext, ICON_EXTENSIONS } from './builder.js'
-import { RUNTIME_SHIM, PLAYGROUND_RUNTIME } from './runtime-shim.js'
-import { getLanIP } from '../utils/net.js'
+import { createWatchContext, createProdWatchContext, ICON_EXTENSIONS } from './builder.js'
+import { buildRustSource, readRustSourceMeta, checkRustPrerequisites } from './rust-builder.js'
+// Runtime shims are now bundled into dev builds via esbuild aliases
+import { getLanIP, getAllIPs } from '../utils/net.js'
 import * as log from '../utils/log.js'
 
 // ---------------------------------------------------------------------------
@@ -18,6 +23,7 @@ export interface DevServerOpts {
   root: string
   port: number
   open: boolean
+  publicUrl?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -84,40 +90,91 @@ export async function startDevServer(opts: DevServerOpts): Promise<void> {
 
   mkdirSync(distDir, { recursive: true })
 
+  // Dev builds go to .dev/ subdirectory (for server-side eval only)
+  const devDir = join(distDir, '.dev')
+  mkdirSync(devDir, { recursive: true })
+
   // Cache evaluated bundle modules to avoid re-evaluating on every /api/call
   const bundleCache = new Map<string, { mtime: number; module: Record<string, (...a: unknown[]) => unknown> }>()
   // Serialize bundle evaluation per source to prevent globalThis.GlyphExtension collisions
   const evalLocks = new Map<string, Promise<void>>()
 
   // ── Build all extensions (watch mode) ─────────────────────────────
+  // Two watch contexts per source:
+  //   - Production IIFE → dist/<id>.js (served to the app, WIT imports → window.__wit.*)
+  //   - Dev IIFE → dist/.dev/<id>.js (for server-side /api/call eval, shims inlined)
 
   const contexts: BuildContext[] = []
 
-  for (const source of sources) {
-    const outfile = join(distDir, `${source.id}.js`)
-    const ctx = await createWatchContext({
+  for (const source of sources.filter(s => s.language === 'js')) {
+    // Production build (app downloads this)
+    const prodOutfile = join(distDir, `${source.id}.js`)
+    const prodCtx = await createProdWatchContext({
       entryPoint: source.entryPoint,
-      outfile,
+      outfile: prodOutfile,
       absWorkingDir: root,
       nodePaths,
     })
-    await ctx.watch()
-    contexts.push(ctx)
+    await prodCtx.watch()
+    contexts.push(prodCtx)
+
+    // Dev build (server evals this for /api/call)
+    const devOutfile = join(devDir, `${source.id}.js`)
+    const devCtx = await createWatchContext({
+      entryPoint: source.entryPoint,
+      outfile: devOutfile,
+      absWorkingDir: root,
+      nodePaths,
+    })
+    await devCtx.watch()
+    contexts.push(devCtx)
+
     watchedIds.add(source.id)
     console.log(`  watching ${source.id}`)
   }
 
-  // ── Mutable base URL (changes if port increments) ─────────────────
+  // ── Build Rust sources once at startup (no watch — cargo is too slow) ─
+  const rustSources = sources.filter(s => s.language === 'rust')
+  if (rustSources.length > 0) {
+    try {
+      checkRustPrerequisites()
+      for (const source of rustSources) {
+        try {
+          console.log(`  building ${source.id} (rust)...`)
+          await buildRustSource({ sourceDir: source.dir, sourceId: source.id, distDir })
+          console.log(`  ${pc.green('✔')} ${source.id} built`)
+        } catch (err) {
+          log.error(`Rust build failed for ${source.id}: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+    } catch (err) {
+      log.warn(`Rust toolchain not available, skipping Rust sources: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
 
-  const lanIP = getLanIP()
-  let baseUrl = `http://${lanIP}:${port}`
+  // ── Mutable base URL (refreshed from current network on each index regeneration) ─
+
+  function currentBaseUrl() {
+    if (opts.publicUrl) return opts.publicUrl.replace(/\/+$/, '')
+    return `http://${getLanIP()}:${port}`
+  }
+  let baseUrl = currentBaseUrl()
 
   // ── Generate index.json with local dev URLs ───────────────────────
 
   // Track bundle mtimes to avoid re-generating index.json on every request
   const lastIndexMtimes = new Map<string, number>()
 
-  function regenerateIndex() {
+  function regenerateIndex(requestHost?: string) {
+    // Use the Host header from the incoming request if available,
+    // so bundleUrls match the IP the client actually connected to.
+    if (requestHost && !opts.publicUrl) {
+      const host = requestHost.replace(/\/+$/, '')
+      baseUrl = `http://${host}`
+    } else {
+      baseUrl = currentBaseUrl()
+    }
+
     // Skip if no bundles have changed since last generation
     if (lastIndexMtimes.size > 0) {
       let changed = false
@@ -134,18 +191,27 @@ export async function startDevServer(opts: DevServerOpts): Promise<void> {
 
     // Re-discover sources to pick up ones added while the server is running
     const latestSources = discoverSources(root)
-    for (const source of latestSources) {
+    for (const source of latestSources.filter(s => s.language === 'js')) {
       if (!watchedIds.has(source.id)) {
         sources.push(source)
         watchedIds.add(source.id)
-        createWatchContext({
-          entryPoint: source.entryPoint,
-          outfile: join(distDir, `${source.id}.js`),
-          absWorkingDir: root,
-          nodePaths,
-        }).then(async (ctx) => {
-          await ctx.watch()
-          contexts.push(ctx)
+        Promise.all([
+          createProdWatchContext({
+            entryPoint: source.entryPoint,
+            outfile: join(distDir, `${source.id}.js`),
+            absWorkingDir: root,
+            nodePaths,
+          }),
+          createWatchContext({
+            entryPoint: source.entryPoint,
+            outfile: join(devDir, `${source.id}.js`),
+            absWorkingDir: root,
+            nodePaths,
+          }),
+        ]).then(async ([prodCtx, devCtx]) => {
+          await prodCtx.watch()
+          await devCtx.watch()
+          contexts.push(prodCtx, devCtx)
           console.log(`  ${pc.green('+')} watching ${source.id}`)
         }).catch((err) => {
           log.warn(`Failed to watch new source: ${err instanceof Error ? err.message : String(err)}`)
@@ -156,18 +222,66 @@ export async function startDevServer(opts: DevServerOpts): Promise<void> {
     const indexSources = []
 
     for (const source of sources) {
+      // ── Rust sources: read metadata from source.json ───��──────────
+      if (source.language === 'rust') {
+        const extJs = join(distDir, source.id, 'ext.js')
+        if (!existsSync(extJs)) continue
+        try {
+          const meta = readRustSourceMeta(source.dir)
+          if (!meta.id) continue
+
+          let iconUrl = (meta.icon as string) || ''
+          for (const iconExt of ICON_EXTENSIONS) {
+            if (existsSync(join(sourcesDir, source.id, 'static', `icon.${iconExt}`))) {
+              iconUrl = `${baseUrl}/static/${source.id}/icon.${iconExt}`
+              break
+            }
+          }
+
+          const rustCaps = Array.isArray(meta.capabilities)
+            ? (meta.capabilities as unknown[]).filter((c): c is string => typeof c === 'string')
+            : undefined
+
+          indexSources.push({
+            id: meta.id,
+            name: meta.name,
+            version: meta.version,
+            language: meta.language,
+            icon: iconUrl,
+            nsfw: (meta.nsfw as boolean) || false,
+            type: 'wasm',
+            dev: (meta.dev as string) || undefined,
+            bundleUrl: `${baseUrl}/dist/${source.id}/ext.js`,
+            ...(meta.requiresLogin ? { requiresLogin: true } : {}),
+            ...(meta.loginUrl ? { loginUrl: meta.loginUrl as string } : {}),
+            ...(meta.sourceType ? { sourceType: meta.sourceType as string } : {}),
+            ...(rustCaps && rustCaps.length > 0 ? { capabilities: rustCaps } : {}),
+          })
+        } catch {
+          // Skip Rust sources with invalid source.json
+        }
+        continue
+      }
+
+      // ── JS sources: extract metadata from evaluated bundle ────────
+      const devOutfile = join(devDir, `${source.id}.js`)
       const outfile = join(distDir, `${source.id}.js`)
-      if (!existsSync(outfile)) continue
+      if (!existsSync(devOutfile) && !existsSync(outfile)) continue
 
       try {
-        const bundleCode = readFileSync(outfile, 'utf-8')
+        const bundleCode = readFileSync(existsSync(devOutfile) ? devOutfile : outfile, 'utf-8')
         // Runs the developer's own compiled bundle in the current Node process.
         // eslint-disable-next-line no-new-func
-        const fn = new Function(RUNTIME_SHIM + bundleCode + '; return GlyphExtension;')
-        const ext = fn() as Record<string, unknown>
-        const src = (ext.default ?? ext) as Record<string, unknown>
-        const info = src.info as Record<string, unknown> | undefined
+        const fn = new Function('require', bundleCode + '; return GlyphExtension;')
+        const ext = fn(_require) as Record<string, unknown>
+        const src = (ext.source ?? ext.default ?? ext) as Record<string, unknown>
+        const info = (Object.getOwnPropertyDescriptor(src, '__info')?.value ?? src.info) as Record<string, unknown> | undefined
         if (!info?.id) continue
+
+        const rawCaps = Object.getOwnPropertyDescriptor(src, '__capabilities')?.value
+        const capabilities = Array.isArray(rawCaps)
+          ? rawCaps.filter((c): c is string => typeof c === 'string')
+          : []
 
         // Resolve icon: local static file or fallback to info.icon
         let iconUrl = (info.icon as string) || ''
@@ -187,6 +301,10 @@ export async function startDevServer(opts: DevServerOpts): Promise<void> {
           nsfw: (info.nsfw as boolean) || false,
           dev: (info.dev as string) || undefined,
           bundleUrl: `${baseUrl}/dist/${source.id}.js`,
+          ...(info.requiresLogin ? { requiresLogin: true } : {}),
+          ...(info.loginUrl ? { loginUrl: info.loginUrl as string } : {}),
+          ...(info.sourceType ? { sourceType: info.sourceType as string } : {}),
+          ...(capabilities.length > 0 ? { capabilities } : {}),
         })
       } catch {
         // Skip sources that fail to evaluate
@@ -225,6 +343,53 @@ export async function startDevServer(opts: DevServerOpts): Promise<void> {
     if (safePath !== root && !safePath.startsWith(root + sep)) {
       res.writeHead(403)
       res.end('Forbidden')
+      return
+    }
+
+    // ── /api/log – receive logs from the iOS app ─────────────────────
+    if (req.method === 'OPTIONS' && urlPath === '/api/log') {
+      res.writeHead(204, {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'POST',
+        'Access-Control-Allow-Headers': 'Content-Type',
+      })
+      res.end()
+      return
+    }
+
+    if (req.method === 'POST' && urlPath === '/api/log') {
+      ;(async () => {
+      let body = ''
+      for await (const chunk of req) {
+        body += chunk
+        if (body.length > 100_000) { req.destroy(); res.writeHead(413); res.end(); return }
+      }
+      try {
+        const entries = JSON.parse(body) as Array<{
+          level?: string
+          category?: string
+          message?: string
+          timestamp?: string
+        }>
+        for (const entry of Array.isArray(entries) ? entries : [entries]) {
+          const level = (entry.level ?? 'INFO').toUpperCase()
+          const cat = entry.category ?? ''
+          const msg = entry.message ?? ''
+          const time = entry.timestamp
+            ? new Date(entry.timestamp).toLocaleTimeString('en-US', { hour12: false, fractionalSecondDigits: 3 })
+            : new Date().toLocaleTimeString('en-US', { hour12: false, fractionalSecondDigits: 3 })
+
+          const levelColor = level === 'ERROR' ? pc.red(level)
+            : level === 'WARN' ? pc.yellow(level)
+            : pc.blue(level)
+          console.log(`  ${pc.dim(time)} ${levelColor} ${pc.dim(`[${cat}]`)} ${msg}`)
+        }
+      } catch {
+        // Ignore malformed log payloads
+      }
+      res.writeHead(200, { 'Access-Control-Allow-Origin': '*' })
+      res.end('ok')
+      })().catch(() => { if (!res.headersSent) { res.writeHead(500); res.end() } })
       return
     }
 
@@ -285,6 +450,7 @@ export async function startDevServer(opts: DevServerOpts): Promise<void> {
         // Check method allowlist BEFORE evaluating the bundle
         const ALLOWED_METHODS = new Set([
           'searchNovels', 'fetchNovelDetails', 'fetchChapterContent',
+          'getDownloadLinks', 'getSourceType',
           'discover', 'getDiscoverSections', 'getDiscoverSectionItems',
           'getSettings', 'getFilters',
         ])
@@ -308,7 +474,8 @@ export async function startDevServer(opts: DevServerOpts): Promise<void> {
           return
         }
 
-        const bundlePath = join(distDir, `${sourceId}.js`)
+        // Use dev build (IIFE with shims) for server-side eval
+        const bundlePath = join(devDir, `${sourceId}.js`)
         if (!existsSync(bundlePath)) {
           res.writeHead(404)
           res.end(JSON.stringify({ ok: false, error: `Bundle not found: ${sourceId}.js` }))
@@ -331,13 +498,9 @@ export async function startDevServer(opts: DevServerOpts): Promise<void> {
               // Runs the developer's own compiled bundle in the current Node process
               // with real HTTP via Node fetch.
               // eslint-disable-next-line no-new-func
-              const fn = new Function(PLAYGROUND_RUNTIME + bundleCode + '; return GlyphExtension;')
-              const ext = fn() as Record<string, unknown>
-              const source = (ext.default ?? ext) as Record<string, (...a: unknown[]) => unknown>
-
-              if (typeof source.initialise === 'function') {
-                await source.initialise()
-              }
+              const fn = new Function('require', bundleCode + '; return GlyphExtension;')
+              const ext = fn(_require) as Record<string, unknown>
+              const source = (ext.source ?? ext.default ?? ext) as Record<string, (...a: unknown[]) => unknown>
 
               cached = { mtime: bundleMtime, module: source }
               bundleCache.set(sourceId, cached)
@@ -509,7 +672,7 @@ export async function startDevServer(opts: DevServerOpts): Promise<void> {
 
     // Regenerate index.json on request (picks up meta changes)
     if (urlPath === '/dist/index.json') {
-      try { regenerateIndex() } catch { /* best-effort; serves stale file on failure */ }
+      try { regenerateIndex(req.headers.host) } catch { /* best-effort; serves stale file on failure */ }
     }
 
     try {
@@ -574,7 +737,7 @@ export async function startDevServer(opts: DevServerOpts): Promise<void> {
         process.exit(1)
       }
       port++
-      baseUrl = `http://${lanIP}:${port}`
+      baseUrl = currentBaseUrl()
       console.log(`Port ${port - 1} in use, trying ${port}...`)
       server.listen(port, '0.0.0.0')
     } else {
@@ -597,20 +760,25 @@ export async function startDevServer(opts: DevServerOpts): Promise<void> {
     const repoName = repoConfig.name || 'Extensions'
     const repoAuthor = repoConfig.author || ''
 
+    const allIPs = getAllIPs()
+
     console.log('')
     console.log(`  ${log.bold('Glyph Dev Server')}`)
     console.log(`  ${log.dim(repoName + (repoAuthor ? ' by ' + repoAuthor : ''))}`)
     console.log('')
     console.log(`  ${log.dim('Local')}     ${pc.cyan(`http://localhost:${port}`)}`)
-    console.log(`  ${log.dim('Network')}   ${pc.cyan(baseUrl)}`)
+    for (const ip of allIPs) {
+      const label = ip.iface.padEnd(9)
+      console.log(`  ${log.dim(label)} ${pc.cyan(`http://${ip.address}:${port}`)}`)
+    }
     console.log('')
     console.log(`  ${log.dim('Landing')}   ${pc.green(landing)}`)
     console.log(`  ${log.dim('JSON')}      ${pc.green(indexUrl)}`)
     console.log('')
     console.log(`  ${log.dim('Deep link')} ${pc.yellow(deepLink)}`)
     console.log('')
-    console.log(`  ${log.dim(`${sources.length} extension(s) watching for changes. Ctrl+C to stop.`)}`)
-    console.log(`  ${log.dim('Warning: Dev server is accessible on your local network.')}`)
+    console.log(`  ${log.dim(`${sources.length} extension(s) watching for changes.`)}`)
+    console.log(`  ${log.dim(`Type`)} ${pc.green('h')} ${log.dim('for help,')} ${pc.green('q')} ${log.dim('to quit.')}`)
     console.log('')
 
     // Open browser if requested
@@ -625,5 +793,57 @@ export async function startDevServer(opts: DevServerOpts): Promise<void> {
         execFile(process.platform === 'darwin' ? 'open' : 'xdg-open', [url], onError)
       }
     }
+
+    // ── Interactive prompt ─────────────────────────────────────────────
+    const rl = createInterface({ input: process.stdin, output: process.stdout })
+
+    const prompt = () => rl.question(pc.dim('> '), async (input) => {
+      const cmd = input.trim().toLowerCase()
+
+      if (cmd === 'h' || cmd === 'help') {
+        console.log('')
+        console.log(`  ${pc.bold('Commands')}`)
+        console.log(`  ${pc.green('h')}, ${pc.green('help')}      Show this message`)
+        console.log(`  ${pc.green('r')}, ${pc.green('restart')}   Rebuild all sources and regenerate index`)
+        console.log(`  ${pc.green('u')}, ${pc.green('urls')}      Show all network URLs and deep link`)
+        console.log(`  ${pc.green('q')}, ${pc.green('quit')}      Stop the server`)
+        console.log('')
+      } else if (cmd === 'r' || cmd === 'restart') {
+        console.log('')
+        log.info('Rebuilding all sources...')
+        for (const ctx of contexts) {
+          try { await ctx.rebuild() } catch (e) {
+            log.error(`Rebuild failed: ${e instanceof Error ? e.message : String(e)}`)
+          }
+        }
+        regenerateIndex()
+        log.success('Rebuilt and index regenerated.')
+        console.log('')
+      } else if (cmd === 'u' || cmd === 'urls') {
+        const freshIPs = getAllIPs()
+        console.log('')
+        console.log(`  ${log.dim('Local')}     ${pc.cyan(`http://localhost:${port}`)}`)
+        for (const ip of freshIPs) {
+          const label = ip.iface.padEnd(9)
+          console.log(`  ${log.dim(label)} ${pc.cyan(`http://${ip.address}:${port}`)}`)
+        }
+        const freshIndex = `http://${freshIPs[0]?.address ?? 'localhost'}:${port}/dist/index.json`
+        const freshDeep = `glyph://add-repo?url=${encodeURIComponent(freshIndex)}`
+        console.log('')
+        console.log(`  ${log.dim('JSON')}      ${pc.green(freshIndex)}`)
+        console.log(`  ${log.dim('Deep link')} ${pc.yellow(freshDeep)}`)
+        console.log('')
+      } else if (cmd === 'q' || cmd === 'quit' || cmd === 's' || cmd === 'stop') {
+        rl.close()
+        await shutdown()
+        return
+      } else if (cmd) {
+        console.log(`  ${log.dim('Unknown command. Type')} ${pc.green('h')} ${log.dim('for help.')}`)
+      }
+
+      prompt()
+    })
+
+    prompt()
   })
 }

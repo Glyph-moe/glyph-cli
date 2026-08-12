@@ -1,54 +1,13 @@
 /**
- * Vitest setup: mocks the Glyph iOS runtime globals.
+ * Vitest setup: provides mock registry integration for WIT shim testing.
  * Injected automatically by `glyph test`.
+ *
+ * Since the SDK now imports from glyph:extension/* specifiers,
+ * and esbuild aliases those to the CLI's shim modules during test builds,
+ * the shims are already inlined. This setup file wires up the mock registry
+ * so that mockRequest/clearMocks from @glyphmoe/sdk/testing still work.
  */
 import { findMock, isMockEnabled } from '@glyphmoe/sdk/test-runtime'
 
-global.Application = {
-  async scheduleRequest(request) {
-    const mock = findMock(request.url)
-    if (mock) {
-      return [
-        { status: mock.status ?? 200, headers: mock.headers ?? {} },
-        mock.body,
-      ]
-    }
-    if (isMockEnabled()) {
-      throw new Error(
-        `No mock registered for: ${request.url}\n` +
-          `Register one with: mockRequest('${request.url}', { body: '...' })`,
-      )
-    }
-    // Fallback to real fetch (integration test mode)
-    const resp = await fetch(request.url, {
-      method: request.method,
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        Accept:
-          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        ...request.headers,
-      },
-      body: request.body ?? undefined,
-    })
-    const text = await resp.text()
-    return [
-      {
-        status: resp.status,
-        headers: Object.fromEntries(resp.headers.entries()),
-      },
-      text,
-    ]
-  },
-  async getDefaultUserAgent() {
-    return 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-  },
-  async getCookies(_url) {
-    return {}
-  },
-  setCookie(_url, _name, _value) {},
-  async getMaxContentRating() {
-    return 'adult'
-  },
-}
+// The http shim checks this global to intercept requests during tests
+global.__glyphMockRegistry = { findMock, isMockEnabled }

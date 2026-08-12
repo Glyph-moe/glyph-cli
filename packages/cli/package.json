@@ -1,6 +1,6 @@
 {
   "name": "@glyphmoe/cli",
-  "version": "1.0.1",
+  "version": "1.0.3",
   "description": "CLI for building and testing Glyph extensions",
   "author": "thinkaz",
   "license": "MIT",
@@ -27,7 +27,8 @@
   },
   "files": [
     "dist",
-    "src/runtime"
+    "src/runtime",
+    "src/lib/shims"
   ],
   "publishConfig": {
     "access": "public"
@@ -35,19 +36,21 @@
   "scripts": {
     "prepack": "npm run build",
     "build": "tsup",
-    "dev": "tsup --watch"
+    "dev": "tsup --watch",
+    "test": "vitest run"
   },
   "dependencies": {
+    "cheerio": "^1.0.0",
     "commander": "^13.0.0",
     "esbuild": "^0.25.0",
-    "node-stdlib-browser": "^1.3.1",
+    "listr2": "^10.2.1",
     "picocolors": "^1.1.0",
     "prompts": "^2.4.2"
   },
   "peerDependencies": {
+    "@glyphmoe/sdk": "*",
     "typescript": "^5.0.0",
-    "vitest": ">=1.0.0",
-    "@glyphmoe/sdk": "*"
+    "vitest": ">=1.0.0"
   },
   "peerDependenciesMeta": {
     "typescript": {
@@ -62,6 +65,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "@types/prompts": "^2.4.9"
+    "@types/prompts": "^2.4.9",
+    "vitest": "^3.0.0"
   }
 }
