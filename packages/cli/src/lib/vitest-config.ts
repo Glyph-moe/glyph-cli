@@ -62,8 +62,16 @@ export default mergeConfig(userConfig, defineConfig({
   },
   test: {
     setupFiles: ['${escapePath(setupFilePosix)}'],
+    server: {
+      deps: {
+        // Force the SDK to be transformed as source so its glyph: imports
+        // are resolved via the alias below instead of being pre-bundled by
+        // Vite's esbuild optimizer (which would fail on the custom scheme).
+        inline: ['@glyphmoe/sdk'],
+      },
+    },
   },
-}))
+}));
 `
   } else {
     configContent = `
@@ -80,6 +88,14 @@ export default defineConfig({
   test: {
     setupFiles: ['${escapePath(setupFilePosix)}'],
     exclude: ['**/node_modules/**'],
+    server: {
+      deps: {
+        // Force the SDK to be transformed as source so its glyph: imports
+        // are resolved via the alias below instead of being pre-bundled by
+        // Vite's esbuild optimizer (which would fail on the custom scheme).
+        inline: ['@glyphmoe/sdk'],
+      },
+    },
   },
 })
 `

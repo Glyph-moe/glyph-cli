@@ -1,6 +1,6 @@
 {
   "name": "@glyphmoe/cli",
-  "version": "1.0.3",
+  "version": "1.0.5",
   "description": "CLI for building and testing Glyph extensions",
   "author": "thinkaz",
   "license": "MIT",
