@@ -5,20 +5,13 @@ export function repoJson(ctx: TemplateContext): string {
     name: ctx.projectName,
     author: ctx.author,
     description: 'My custom Glyph extension repository.',
+    // `url` is intentionally left empty: `glyph build` emits root-relative asset
+    // URLs that the app resolves against the deployed index.json URL, so repos no
+    // longer need a hand-edited GitHub Pages base URL here.
+    url: '',
   }
 
-  if (ctx.repoUrl) {
-    repo.website = ctx.repoUrl
-    const match = ctx.repoUrl.match(/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/)
-    if (match) {
-      repo.url = `https://${match[1]}.github.io/${match[2]}`
-    } else {
-      repo.url = ctx.repoUrl
-    }
-  } else {
-    repo.website = ''
-    repo.url = ''
-  }
+  repo.website = ctx.repoUrl || ''
 
   return JSON.stringify(repo, null, 2) + '\n'
 }

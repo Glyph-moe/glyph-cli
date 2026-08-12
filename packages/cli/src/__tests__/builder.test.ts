@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { writeFileSync, mkdirSync, readFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { validateBundle, generateIndex, type IndexSource } from '../lib/builder.js'
+import { validateBundle, generateIndex, buildAssetUrl, resolveIcon, resolveRepository, type IndexSource } from '../lib/builder.js'
 
 // Minimal IIFE bundle that mimics what esbuild produces with dev shims
 function makeBundle(source: Record<string, unknown>): string {
@@ -348,5 +348,72 @@ describe('generateIndex', () => {
 
     const index = JSON.parse(readFileSync(join(tmpDir, 'index.json'), 'utf-8'))
     expect('capabilities' in index.sources[0]).toBe(false)
+  })
+
+  it('emits a non-empty repository even when url is empty', () => {
+    generateIndex({
+      distDir: tmpDir,
+      repoConfig: { name: 'Test Repo', author: 'tester', description: '', website: '', url: '' },
+      sources: [],
+    })
+    const index = JSON.parse(readFileSync(join(tmpDir, 'index.json'), 'utf-8'))
+    expect(index.repository).not.toBe('')
+    expect(index.repository).toBeDefined()
+  })
+})
+
+describe('buildAssetUrl', () => {
+  it('emits index-relative paths when baseUrl is empty', () => {
+    expect(buildAssetUrl('', 'my-src.js')).toBe('my-src.js')
+    expect(buildAssetUrl('', 'my-src/ext.js')).toBe('my-src/ext.js')
+    expect(buildAssetUrl('', 'my-src/icon.png')).toBe('my-src/icon.png')
+  })
+
+  it('emits absolute paths when baseUrl is set', () => {
+    expect(buildAssetUrl('https://user.github.io/repo', 'my-src.js'))
+      .toBe('https://user.github.io/repo/dist/my-src.js')
+    expect(buildAssetUrl('https://user.github.io/repo', 'my-src/ext.js'))
+      .toBe('https://user.github.io/repo/dist/my-src/ext.js')
+  })
+})
+
+describe('resolveRepository', () => {
+  it('prefers repoConfig.url when set', () => {
+    expect(resolveRepository({ name: 'repo', url: 'https://example.github.io/repo' }))
+      .toBe('https://example.github.io/repo')
+  })
+
+  it('falls back to a non-empty value when url is empty', () => {
+    // When url is empty, repository derives from the git origin remote (if any)
+    // and otherwise falls back to the repo name — it must never be empty.
+    expect(resolveRepository({ name: 'my-extensions', url: '' })).not.toBe('')
+  })
+})
+
+describe('resolveIcon', () => {
+  beforeEach(() => {
+    tmpDir = join(tmpdir(), `glyph-icon-test-${Date.now()}`)
+    mkdirSync(tmpDir, { recursive: true })
+  })
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it('emits index-relative icon path when baseUrl is empty', () => {
+    const sourcesDir = join(tmpDir, 'sources')
+    const staticDir = join(sourcesDir, 'src-a', 'static')
+    mkdirSync(staticDir, { recursive: true })
+    writeFileSync(join(staticDir, 'icon.png'), 'fake')
+    expect(resolveIcon('src-a', sourcesDir, '', 'fallback')).toBe('src-a/icon.png')
+  })
+
+  it('emits absolute icon path when baseUrl is set', () => {
+    const sourcesDir = join(tmpDir, 'sources')
+    const staticDir = join(sourcesDir, 'src-a', 'static')
+    mkdirSync(staticDir, { recursive: true })
+    writeFileSync(join(staticDir, 'icon.png'), 'fake')
+    expect(resolveIcon('src-a', sourcesDir, 'https://example.github.io/repo', 'fallback'))
+      .toBe('https://example.github.io/repo/dist/src-a/icon.png')
   })
 })

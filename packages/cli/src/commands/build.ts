@@ -4,7 +4,7 @@ import { mkdirSync, unlinkSync, readFileSync, statSync } from 'fs'
 import { createHash } from 'node:crypto'
 import { Listr } from 'listr2'
 import { findProjectRoot, discoverSources, readRepoConfig } from '../lib/project.js'
-import { buildSource, buildSourceDev, validateBundle, copyStaticAssets, resolveIcon, generateIndex } from '../lib/builder.js'
+import { buildSource, buildSourceDev, validateBundle, copyStaticAssets, resolveIcon, generateIndex, buildAssetUrl } from '../lib/builder.js'
 import { buildRustSource, checkRustPrerequisites, readRustSourceMeta } from '../lib/rust-builder.js'
 import { GlyphError, ensureRepoJson, ensureSourcesDir } from '../utils/errors.js'
 
@@ -27,12 +27,12 @@ export function registerBuildCommand(program: Command) {
 
       const repoConfig = readRepoConfig(root)
 
-      if (!repoConfig.url) {
+      // Back-compat validation: allow an empty url (relative-URL output), but
+      // reject a url that is set-but-malformed (not an absolute http(s) base).
+      if (repoConfig.url && !/^https?:\/\//.test(repoConfig.url)) {
         throw new GlyphError(
-          'repo.json is missing a "url" value.',
-          'Set "url" in repo.json to your GitHub Pages base URL.\n'
-          + '  Example: "https://yourname.github.io/my-extensions"\n'
-          + '  This is where your built extensions will be hosted.',
+          'repo.json has an invalid "url" value.',
+          'Set "url" in repo.json to a full URL like "https://yourname.github.io/my-extensions", or leave it empty to emit root-relative asset URLs.',
         )
       }
 
@@ -93,7 +93,7 @@ export function registerBuildCommand(program: Command) {
                   nsfw: (meta.nsfw as boolean) || false,
                   type: 'wasm' as const,
                   dev: (meta.dev as string) || undefined,
-                  bundleUrl: `${repoConfig.url}/dist/${source.id}/ext.js`,
+                  bundleUrl: buildAssetUrl(repoConfig.url, `${source.id}/ext.js`),
                   sha256: sha256File(wasmBundlePath),
                   ...(meta.requiresLogin ? { requiresLogin: true } : {}),
                   ...(meta.loginUrl ? { loginUrl: meta.loginUrl as string } : {}),
@@ -141,7 +141,7 @@ export function registerBuildCommand(program: Command) {
                   nsfw: info.nsfw || false,
                   type: 'js' as const,
                   dev: info.dev || undefined,
-                  bundleUrl: `${repoConfig.url}/dist/${source.id}.js`,
+                  bundleUrl: buildAssetUrl(repoConfig.url, `${source.id}.js`),
                   sha256: sha256File(outfile),
                   ...(info.requiresLogin ? { requiresLogin: true } : {}),
                   ...(info.loginUrl ? { loginUrl: info.loginUrl } : {}),

@@ -9,6 +9,7 @@ import pc from 'picocolors'
 import type { TemplateContext } from './templates/types'
 import { packageJson } from './templates/package-json'
 import { repoJson } from './templates/repo-json'
+import { deployYml } from './templates/deploy-yml'
 import { tsconfigJson } from './templates/tsconfig-json'
 import { vitestConfig } from './templates/vitest-config'
 import { gitignore } from './templates/gitignore'
@@ -127,9 +128,11 @@ async function main() {
   const sourceDir = join(projectDir, 'sources', ctx.sourceId)
   const srcDir = join(sourceDir, 'src')
   const staticDir = join(sourceDir, 'static')
+  const workflowsDir = join(projectDir, '.github', 'workflows')
 
   mkdirSync(srcDir, { recursive: true })
   mkdirSync(staticDir, { recursive: true })
+  mkdirSync(workflowsDir, { recursive: true })
 
   // Write root files
   const files: [string, string][] = [
@@ -148,6 +151,8 @@ async function main() {
     [join(srcDir, `${ctx.sourceId}.test.ts`), testTs(ctx)],
     // Static dir gitkeep
     [join(staticDir, '.gitkeep'), ''],
+    // CI workflow (build + deploy to GitHub Pages)
+    [join(workflowsDir, 'deploy.yml'), deployYml()],
   ]
 
   for (const [filePath, content] of files) {

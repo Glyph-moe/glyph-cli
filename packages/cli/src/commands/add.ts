@@ -211,6 +211,7 @@ export const source = createSource({
   icon: \`\${BASE}/favicon.ico\`,
   language: ${JSON.stringify(language)},
   dev: ${JSON.stringify(repoConfig.author || '')},
+  sourceType: 'reader',
   rateLimit: RateLimit.balanced,
 
   searchNovels(query, page) {

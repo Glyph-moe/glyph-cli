@@ -9,7 +9,7 @@ import { join, resolve, extname, sep } from 'path'
 import type { BuildContext } from 'esbuild'
 import pc from 'picocolors'
 import { readRepoConfig, discoverSources, type SourceEntry } from './project.js'
-import { createWatchContext, createProdWatchContext, ICON_EXTENSIONS } from './builder.js'
+import { createWatchContext, createProdWatchContext, ICON_EXTENSIONS, buildAssetUrl, resolveRepository } from './builder.js'
 import { buildRustSource, readRustSourceMeta, checkRustPrerequisites } from './rust-builder.js'
 // Runtime shims are now bundled into dev builds via esbuild aliases
 import { getLanIP, getAllIPs } from '../utils/net.js'
@@ -167,13 +167,17 @@ export async function startDevServer(opts: DevServerOpts): Promise<void> {
 
   function regenerateIndex(requestHost?: string) {
     // Use the Host header from the incoming request if available,
-    // so bundleUrls match the IP the client actually connected to.
+    // so the printed deep-link/indexUrl match the IP the client used.
     if (requestHost && !opts.publicUrl) {
       const host = requestHost.replace(/\/+$/, '')
       baseUrl = `http://${host}`
     } else {
       baseUrl = currentBaseUrl()
     }
+
+    // Asset URLs: absolute only when a publicUrl (tunnel) is set, otherwise
+    // root-relative paths the app resolves against the index URL.
+    const assetBase = opts.publicUrl ? baseUrl : ''
 
     // Skip if no bundles have changed since last generation
     if (lastIndexMtimes.size > 0) {
@@ -233,7 +237,7 @@ export async function startDevServer(opts: DevServerOpts): Promise<void> {
           let iconUrl = (meta.icon as string) || ''
           for (const iconExt of ICON_EXTENSIONS) {
             if (existsSync(join(sourcesDir, source.id, 'static', `icon.${iconExt}`))) {
-              iconUrl = `${baseUrl}/static/${source.id}/icon.${iconExt}`
+              iconUrl = buildAssetUrl(assetBase, `${source.id}/icon.${iconExt}`)
               break
             }
           }
@@ -251,7 +255,7 @@ export async function startDevServer(opts: DevServerOpts): Promise<void> {
             nsfw: (meta.nsfw as boolean) || false,
             type: 'wasm',
             dev: (meta.dev as string) || undefined,
-            bundleUrl: `${baseUrl}/dist/${source.id}/ext.js`,
+            bundleUrl: buildAssetUrl(assetBase, `${source.id}/ext.js`),
             ...(meta.requiresLogin ? { requiresLogin: true } : {}),
             ...(meta.loginUrl ? { loginUrl: meta.loginUrl as string } : {}),
             ...(meta.sourceType ? { sourceType: meta.sourceType as string } : {}),
@@ -287,7 +291,7 @@ export async function startDevServer(opts: DevServerOpts): Promise<void> {
         let iconUrl = (info.icon as string) || ''
         for (const iconExt of ICON_EXTENSIONS) {
           if (existsSync(join(sourcesDir, source.id, 'static', `icon.${iconExt}`))) {
-            iconUrl = `${baseUrl}/static/${source.id}/icon.${iconExt}`
+            iconUrl = buildAssetUrl(assetBase, `${source.id}/icon.${iconExt}`)
             break
           }
         }
@@ -300,7 +304,7 @@ export async function startDevServer(opts: DevServerOpts): Promise<void> {
           icon: iconUrl,
           nsfw: (info.nsfw as boolean) || false,
           dev: (info.dev as string) || undefined,
-          bundleUrl: `${baseUrl}/dist/${source.id}.js`,
+          bundleUrl: buildAssetUrl(assetBase, `${source.id}.js`),
           ...(info.requiresLogin ? { requiresLogin: true } : {}),
           ...(info.loginUrl ? { loginUrl: info.loginUrl as string } : {}),
           ...(info.sourceType ? { sourceType: info.sourceType as string } : {}),
@@ -316,7 +320,7 @@ export async function startDevServer(opts: DevServerOpts): Promise<void> {
       author: repoConfig.author || '',
       description: repoConfig.description || '',
       website: repoConfig.website || '',
-      repository: baseUrl,
+      repository: resolveRepository(repoConfig),
       sources: indexSources,
     }
 
@@ -667,6 +671,21 @@ export async function startDevServer(opts: DevServerOpts): Promise<void> {
         res.writeHead(403)
         res.end('Forbidden')
         return
+      }
+    }
+
+    // Unify static asset path with prod: /dist/<id>/<file> serves the prod copy
+    // (dist/<id>/<file>) with a fallback to the dev source copy
+    // (sources/<id>/static/<file>).
+    const distStaticMatch = urlPath.match(/^\/dist\/([^/]+)\/([^/]+)$/)
+    if (distStaticMatch) {
+      const [, sourceId, fileName] = distStaticMatch
+      const prodPath = join(distDir, sourceId, fileName)
+      const sourcePath = join(sourcesDir, sourceId, 'static', fileName)
+      if (existsSync(prodPath)) {
+        filePath = prodPath
+      } else if (existsSync(sourcePath)) {
+        filePath = sourcePath
       }
     }
 

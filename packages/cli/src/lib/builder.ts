@@ -1,5 +1,6 @@
 import { build, context, type BuildContext } from 'esbuild'
 import { readFileSync, writeFileSync, mkdirSync, existsSync, cpSync, statSync } from 'fs'
+import { execSync } from 'child_process'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { createRequire } from 'module'
@@ -322,14 +323,45 @@ export function copyStaticAssets(sourceId: string, sourcesDir: string, distDir: 
 
 export const ICON_EXTENSIONS = ['png', 'jpg', 'jpeg', 'svg', 'webp'] as const
 
+// Build a production asset URL for a source. `file` is the path relative to the
+// dist/ directory (e.g. `<id>.js` for JS bundles, `<id>/ext.js` for wasm, and
+// `<id>/icon.png` for icons). When a base URL is set, emits an absolute URL;
+// otherwise emits a path RELATIVE to the index.json location (e.g. `<id>.js`),
+// which the app resolves against the index URL. Index-relative (not root-relative)
+// is critical: it preserves any path prefix the site is hosted under (e.g. the
+// `/<repo>/` segment of a GitHub Pages project page), whereas a root-relative
+// `/dist/<id>.js` would drop that prefix and 404.
+export function buildAssetUrl(baseUrl: string, file: string): string {
+  return baseUrl ? `${baseUrl}/dist/${file}` : file
+}
+
 export function resolveIcon(sourceId: string, sourcesDir: string, baseUrl: string, fallbackIcon: string): string {
   for (const ext of ICON_EXTENSIONS) {
     const iconPath = join(sourcesDir, sourceId, 'static', `icon.${ext}`)
     if (existsSync(iconPath)) {
-      return `${baseUrl}/dist/${sourceId}/icon.${ext}`
+      return buildAssetUrl(baseUrl, `${sourceId}/icon.${ext}`)
     }
   }
   return fallbackIcon
+}
+
+// Derive the non-empty `repository` value for the index.
+// Prefers repoConfig.url, then derives from the git origin remote (parsed to a
+// GitHub Pages URL), and finally falls back to the repo name.
+export function resolveRepository(repoConfig: { name: string; url: string }): string {
+  if (repoConfig.url) return repoConfig.url
+  try {
+    const remote = execSync('git config --get remote.origin.url', { encoding: 'utf-8' }).trim()
+    if (remote) {
+      // Handles both https://github.com/owner/repo and git@github.com:owner/repo
+      const match = remote.match(/github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?$/)
+      if (match) return `https://${match[1]}.github.io/${match[2]}`
+      return remote
+    }
+  } catch {
+    // no git remote available
+  }
+  return repoConfig.name
 }
 
 // ---------------------------------------------------------------------------
@@ -366,7 +398,7 @@ export function generateIndex(opts: GenerateIndexOpts): void {
     author: opts.repoConfig.author,
     description: opts.repoConfig.description,
     website: opts.repoConfig.website,
-    repository: opts.repoConfig.url,
+    repository: resolveRepository(opts.repoConfig),
     sources: opts.sources,
   }
   writeFileSync(join(opts.distDir, 'index.json'), JSON.stringify(index, null, 2) + '\n')
